@@ -1,0 +1,1024 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+import requests
+import uuid
+import os
+from datetime import datetime, timedelta
+
+# Configuration
+FIREBASE_DB_URL = "https://bancodobbb-default-rtdb.europe-west1.firebasedatabase.app"
+USERS_URL       = f"{FIREBASE_DB_URL}/users.json"
+PLAYERS_URL     = f"{FIREBASE_DB_URL}/players.json"
+SAVINGS_URL     = f"{FIREBASE_DB_URL}/savings.json"
+LOANS_URL       = f"{FIREBASE_DB_URL}/loans.json"
+VERSION_URL     = f"{FIREBASE_DB_URL}/app_version.json"
+CURRENT_VERSION = "1.0.9"
+
+# --- Firebase helpers ---
+def firebase_get(url):
+    try:
+        r = requests.get(url)
+        if r.status_code == 200:
+            return r.json() or {}
+    except Exception as e:
+        print("Firebase GET error:", e)
+    return {}
+
+def firebase_put(url, data):
+    try:
+        r = requests.put(url, json=data)
+        return r.ok
+    except Exception as e:
+        print("Firebase PUT error:", e)
+    return False
+
+def firebase_patch(url, data):
+    try:
+        r = requests.patch(url, json=data)
+        return r.ok
+    except Exception as e:
+        print("Firebase PATCH error:", e)
+    return False
+
+def firebase_delete(url):
+    """Removes an entry from Firebase permanently."""
+    try:
+        r = requests.delete(url)
+        return r.ok
+    except Exception as e:
+        print("Firebase DELETE error:", e)
+    return False
+
+# --- Utility ---
+def generate_id():
+    return str(uuid.uuid4())[:8]
+
+def calculate_loan_total(amount):
+    # Adjust interest rate based on loan amount
+    if amount == 100000:
+        rate = 0.50
+    elif amount == 500000:
+        rate = 0.35
+    else:
+        rate = 0.30
+    return int(amount * (1 + rate)), rate
+
+class BankApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Bank Manager")
+        self.geometry("900x600")
+        self.resizable(False, False)
+        self.current_user = None
+        self.players = {}
+        self.savings = {}
+        self.loans = {}
+
+        # Create a new theme for a more modern look
+        self.create_custom_style()
+
+        # Attempt to load icon images for the buttons (modify paths as needed)
+        # Make sure you have these .png files in a "icons" folder or adjust paths accordingly
+        try:
+            self.icon_new_player = tk.PhotoImage(file="icons/new_player.png")
+        except:
+            self.icon_new_player = None
+        try:
+            self.icon_search = tk.PhotoImage(file="icons/search.png")
+        except:
+            self.icon_search = None
+        try:
+            self.icon_product = tk.PhotoImage(file="icons/product.png")
+        except:
+            self.icon_product = None
+        try:
+            self.icon_report = tk.PhotoImage(file="icons/report.png")
+        except:
+            self.icon_report = None
+        try:
+            self.icon_backup = tk.PhotoImage(file="icons/backup.png")
+        except:
+            self.icon_backup = None
+        try:
+            self.icon_savings = tk.PhotoImage(file="icons/savings.png")
+        except:
+            self.icon_savings = None
+        try:
+            self.icon_loans = tk.PhotoImage(file="icons/loans.png")
+        except:
+            self.icon_loans = None
+        try:
+            self.icon_checkupdates = tk.PhotoImage(file="icons/check_updates.png")
+        except:
+            self.icon_checkupdates = None
+
+        self.build_login()
+
+    def create_custom_style(self):
+        style = ttk.Style(self)
+        # You can pick another base theme like 'clam', 'alt', 'vista', or 'default' depending on OS
+        style.theme_use('clam')
+
+        # Customize TButton style
+        style.configure(
+            "Custom.TButton",
+            font=('Segoe UI', 10, 'bold'),
+            padding=6,
+            foreground='#ffffff',
+            background='#344955',
+            relief='flat'
+        )
+        style.map(
+            "Custom.TButton",
+            background=[("active", "#232F34")],
+            relief=[("pressed", "groove")]
+        )
+
+        # Customize frame background, etc.
+        style.configure(
+            "TFrame",
+            background="#eeeeee"
+        )
+        style.configure(
+            "TLabel",
+            background="#eeeeee",
+            foreground="#212121"
+        )
+
+        # Additional tweak for treeview headings
+        style.configure(
+            "Report.Treeview.Heading",
+            background='#333333',
+            foreground='white',
+            font=('Segoe UI', 12, 'bold')
+        )
+        style.configure(
+            "Report.Treeview",
+            font=('Segoe UI', 10),
+            rowheight=25
+        )
+
+    def build_login(self):
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill='both', expand=True)
+
+        ttk.Label(frame, text="Username:").pack(pady=(0, 5))
+        self.user_entry = ttk.Entry(frame)
+        self.user_entry.pack(pady=5)
+
+        ttk.Label(frame, text="Password:").pack(pady=(10, 5))
+        self.pass_entry = ttk.Entry(frame, show="*")
+        self.pass_entry.pack(pady=5)
+
+        btn_login = ttk.Button(
+            frame, 
+            text="Login", 
+            command=self.check_login,
+            style="Custom.TButton"
+        )
+        btn_login.pack(pady=20)
+
+    def check_login(self):
+        users = firebase_get(USERS_URL)
+        u, p = self.user_entry.get().strip(), self.pass_entry.get().strip()
+        for info in users.values():
+            if info.get('username') == u and info.get('password') == p:
+                self.current_user = u
+                self.main_ui()
+                return
+        messagebox.showerror("Login Failed", "Invalid username or password.")
+
+    def main_ui(self):
+        for w in self.winfo_children():
+            w.destroy()
+        self.sync_data()
+
+        # Main container
+        style = ttk.Style(self)
+        style.theme_use('clam')
+        side = ttk.Frame(self, style="TFrame", padding=5)
+        side.pack(side='left', fill='y')
+
+        content = ttk.Frame(self, style="TFrame")
+        content.pack(side='left', fill='both', expand=True)
+        self.content = content
+
+        user_label = ttk.Label(side, text=f"User: {self.current_user}", font=('Segoe UI', 12, 'bold'))
+        user_label.pack(pady=10)
+
+        # Build side menu buttons with icons
+        menu_buttons = [
+            ("New Player", self.icon_new_player, self.new_player),
+            ("Search Player", self.icon_search, self.search_player),
+            ("Add Product", self.icon_product, self.add_product),
+            ("Report", self.icon_report, self.report),
+            ("Backup", self.icon_backup, self.backup),
+            ("Check Savings", self.icon_savings, self.check_savings),
+            ("Check Loans", self.icon_loans, self.check_loans),
+            ("Check Updates", self.icon_checkupdates, self.check_updates)
+        ]
+
+        for text, icon, cmd in menu_buttons:
+            ttk.Button(
+                side,
+                text=text,
+                image=icon,
+                compound='left',
+                style="Custom.TButton",
+                command=cmd
+            ).pack(fill='x', pady=5, padx=10)
+
+        self.show_welcome()
+
+    def sync_data(self):
+        self.players = firebase_get(PLAYERS_URL)
+        self.savings = firebase_get(SAVINGS_URL)
+        self.loans   = firebase_get(LOANS_URL)
+        self.after(180000, self.sync_data)
+
+    def clear_content(self):
+        for w in self.content.winfo_children():
+            w.destroy()
+
+    def show_welcome(self):
+        self.clear_content()
+        welcome_label = ttk.Label(
+            self.content,
+            text="Welcome to Bank Manager",
+            font=('Segoe UI', 16, 'bold')
+        )
+        welcome_label.pack(pady=20)
+
+    # ---- New Player ----
+    def new_player(self):
+        self.clear_content()
+        frame = ttk.Frame(self.content, padding=20, style="TFrame")
+        frame.pack()
+
+        ttk.Label(frame, text="New Player", font=('Segoe UI', 12, 'bold')).grid(row=0, column=0, columnspan=2, pady=10)
+        ttk.Label(frame, text="Name:").grid(row=1, column=0, sticky='w', padx=5)
+        name_e = ttk.Entry(frame)
+        name_e.grid(row=1, column=1, pady=5)
+
+        ttk.Label(frame, text="Discord:").grid(row=2, column=0, sticky='w', padx=5)
+        disc_e = ttk.Entry(frame)
+        disc_e.grid(row=2, column=1, pady=5)
+
+        def submit():
+            n = name_e.get().strip()
+            d = disc_e.get().strip()
+            if not n or not d:
+                messagebox.showerror("Error", "Fill all fields.")
+                return
+
+            pid = generate_id()
+            pdata = {
+                "id": pid,
+                "name": n,
+                "discord": d,
+                "user": self.current_user
+            }
+            if firebase_put(f"{PLAYERS_URL[:-5]}/{pid}.json", pdata):
+                messagebox.showinfo("Success", "Player added.")
+                self.sync_data()
+
+        ttk.Button(frame, text="Add", style="Custom.TButton", command=submit).grid(row=3, column=0, columnspan=2, pady=15)
+
+    # ---- Search Player (with delete) ----
+    def search_player(self):
+        self.clear_content()
+        frame = ttk.Frame(self.content, padding=20, style="TFrame")
+        frame.pack()
+
+        ttk.Label(frame, text="Search by Name or ID:", font=('Segoe UI', 11, 'bold')).grid(row=0, column=0)
+        entry = ttk.Entry(frame)
+        entry.grid(row=0, column=1, padx=5)
+
+        def do_search():
+            term = entry.get().strip().lower()
+            res = [p for p in self.players.values() if term in p.get('name', '').lower() or p.get('id') == term]
+            if not res:
+                messagebox.showerror("Error", "Not found.")
+                return
+
+            p = res[0]
+            pid = p['id']
+            win = tk.Toplevel(self)
+            win.title(p['name'])
+            cont = ttk.Frame(win, padding=10, style="TFrame")
+            cont.pack(fill='both', expand=True)
+
+            info = (
+                f"ID: {pid}\n"
+                f"Name: {p['name']}\n"
+                f"Discord: {p['discord']}\n"
+                f"Added by: {p.get('user')}"
+            )
+            ttk.Label(cont, text=info, font=('Segoe UI', 12)).pack(pady=5)
+            self.vars = {}
+
+            # Show savings
+            ttk.Label(cont, text="Savings:", font=('Segoe UI', 11, 'bold')).pack(anchor='w', pady=(5, 0))
+            for s in self.savings.values():
+                if s['player_id'] == pid:
+                    var = tk.IntVar()
+                    self.vars[s['id']] = (var, 'saving')
+                    ttk.Checkbutton(cont, text=f"€{s['invested_value']} [{s['status']}]", variable=var).pack(anchor='w')
+
+            # Show loans
+            ttk.Label(cont, text="Loans:", font=('Segoe UI', 11, 'bold')).pack(anchor='w', pady=(10, 0))
+            for l in self.loans.values():
+                if l['player_id'] == pid:
+                    var = tk.IntVar()
+                    self.vars[l['id']] = (var, 'loan')
+                    ttk.Checkbutton(cont, text=f"€{l['value']} [{l['status']}]", variable=var).pack(anchor='w')
+
+            btn_frame = ttk.Frame(cont, style="TFrame")
+            btn_frame.pack(pady=10)
+            ttk.Button(btn_frame, text="Apply", style="Custom.TButton", command=lambda: self._apply_status(win)).pack(side='left', padx=5)
+            ttk.Button(btn_frame, text="Delete", style="Custom.TButton", command=lambda: self._delete_products(win)).pack(side='left', padx=5)
+
+        ttk.Button(frame, text="Search", style="Custom.TButton", command=do_search).grid(row=1, column=0, columnspan=2, pady=10)
+
+    def _apply_status(self, win):
+        for id_, (v, typ) in self.vars.items():
+            if v.get():
+                url = f"{SAVINGS_URL[:-5]}/{id_}.json" if typ == 'saving' else f"{LOANS_URL[:-5]}/{id_}.json"
+                data = (
+                    {'status': 'Inactive', 'quit': True} if typ == 'saving' else
+                    {'status': 'Paid-Off', 'paid_off': True}
+                )
+                firebase_patch(url, data)
+        messagebox.showinfo("Done", "Status updated.")
+        win.destroy()
+        self.sync_data()
+
+    def _delete_products(self, win):
+        # Permanently remove entries from Firebase
+        for id_, (v, typ) in list(self.vars.items()):
+            if v.get():
+                url = f"{SAVINGS_URL[:-5]}/{id_}.json" if typ == 'saving' else f"{LOANS_URL[:-5]}/{id_}.json"
+                firebase_delete(url)
+        messagebox.showinfo("Done", "Selected items deleted from Firebase.")
+        win.destroy()
+        self.sync_data()
+
+    # ---- Add Product ----
+    def add_product(self):
+        self.clear_content()
+        frame = ttk.Frame(self.content, padding=20, style="TFrame")
+        frame.pack()
+
+        ttk.Label(frame, text="Add Product", font=('Segoe UI', 12, 'bold')).grid(row=0, column=0, columnspan=2, pady=10)
+
+        ttk.Label(frame, text="Type:").grid(row=1, column=0, sticky='w', padx=5)
+        type_var = tk.StringVar()
+        type_combo = ttk.Combobox(frame, textvariable=type_var,
+                                  values=["Saving", "Loan"], state='readonly')
+        type_combo.grid(row=1, column=1, pady=5)
+
+        ttk.Label(frame, text="Value:").grid(row=2, column=0, sticky='w', padx=5)
+        val_entry = ttk.Entry(frame)
+        val_entry.grid(row=2, column=1, pady=5)
+
+        ttk.Label(frame, text="Days (Only Loans):").grid(row=3, column=0, sticky='w', padx=5)
+        days_e = ttk.Entry(frame)
+        days_e.grid(row=3, column=1, pady=5)
+        days_e.config(state='disabled')  # Default disabled
+
+        def update(e=None):
+            if type_var.get() == 'Loan':
+                days_e.config(state='normal')
+            else:
+                days_e.delete(0, 'end')
+                days_e.insert(0, '0')
+                days_e.config(state='disabled')
+
+        type_combo.bind('<<ComboboxSelected>>', update)
+
+        def submit():
+            term = simpledialog.askstring("Player Search", "Enter player name or ID:")
+            if not term:
+                return
+            # Find player
+            res = [p for p in self.players.values()
+                   if term.lower() in p.get('name', '').lower() or p.get('id') == term]
+            if not res:
+                messagebox.showerror("Error", "Player not found")
+                return
+
+            pid = res[0]['id']
+            tp = type_var.get()
+
+            val_str = val_entry.get().strip().lower()
+            mapping = {
+                "100k": 100000,
+                "500k": 500000,
+                "1m": 1000000,
+                "5m": 5000000,
+                "10m": 10000000
+            }
+
+            if val_str in mapping:
+                val = mapping[val_str]
+            else:
+                try:
+                    # Attempt to parse numeric if user typed "100000" or partial
+                    val_str_cleaned = val_str.replace('m', '000000').replace('k', '000')
+                    val = int(val_str_cleaned)
+                except:
+                    messagebox.showerror("Error", "Enter a numeric value or valid shorthand (e.g., 100k, 1m).")
+                    return
+
+            if tp == 'Saving':
+                sid = generate_id()
+                s = {
+                    "id": sid,
+                    "player_id": pid,
+                    "invested_value": val,
+                    "status": "Active",
+                    "quit": False,
+                    "user": self.current_user,
+                    "start_date": datetime.now().strftime('%Y-%m-%d'),
+                    "payments_count": 0,
+                    "interest_rate": 0.03,
+                    "payments_history": []
+                }
+                firebase_put(f"{SAVINGS_URL[:-5]}/{sid}.json", s)
+            else:
+                try:
+                    days = int(days_e.get())
+                except:
+                    messagebox.showerror("Error", "Invalid days")
+                    return
+                total, rate = calculate_loan_total(val)
+                lid = generate_id()
+                l = {
+                    "id": lid,
+                    "player_id": pid,
+                    "value": val,
+                    "interest_rate": rate,
+                    "total_to_pay": total,
+                    "days_passed": 0,
+                    "total_days": days,
+                    "status": "Active",
+                    "paid_off": False,
+                    "user": self.current_user,
+                    "start_date": datetime.now().strftime('%Y-%m-%d'),
+                    "payments_history": []
+                }
+                firebase_put(f"{LOANS_URL[:-5]}/{lid}.json", l)
+
+            messagebox.showinfo("Success", f"{tp} added.")
+            self.sync_data()
+
+        ttk.Button(frame, text="Submit", style="Custom.TButton", command=submit).grid(row=4, column=0, columnspan=2, pady=15)
+
+    # ---- Report ----
+    def report(self):
+        self.clear_content()
+
+        frame = ttk.Frame(self.content, padding=20, style="TFrame")
+        frame.pack(fill='both', expand=True)
+
+        ttk.Label(frame, text="Report: Players and Products", font=('Segoe UI', 14, 'bold')).pack(pady=10)
+
+        # Summary
+        active_sav = sum(1 for s in self.savings.values() if s['status'] == 'Active')
+        total_sav = sum(s['invested_value'] for s in self.savings.values() if s['status'] == 'Active')
+        active_loan = sum(1 for l in self.loans.values() if l['status'] == 'Active')
+        total_loan = sum(l['value'] for l in self.loans.values() if l['status'] == 'Active')
+
+        ttk.Label(frame, text=f"Active Savings: {active_sav}  Total: €{total_sav}").pack()
+        ttk.Label(frame, text=f"Active Loans:   {active_loan}  Total: €{total_loan}").pack(pady=(0, 10))
+
+        cols = ('Player ID', 'Name', 'Product Type', 'Value', 'Status')
+        tree = ttk.Treeview(frame, columns=cols, show='headings', height=15, style="Report.Treeview")
+
+        # Define column headings and widths
+        for c in cols:
+            tree.heading(c, text=c)
+            tree.column(c, width=120, anchor='center')
+
+        # Insert data
+        all_players = list(self.players.values())
+        for idx, p in enumerate(all_players):
+            pid = p['id']
+            name = p.get('name', '')
+            # Insert savings
+            for s in self.savings.values():
+                if s['player_id'] == pid:
+                    tree.insert(
+                        '',
+                        'end',
+                        values=(pid, name, 'Saving', f"€{s['invested_value']}", s['status']),
+                        tags=('odd' if idx % 2 else 'even')
+                    )
+            # Insert loans
+            for l in self.loans.values():
+                if l['player_id'] == pid:
+                    tree.insert(
+                        '',
+                        'end',
+                        values=(pid, name, 'Loan', f"€{l['value']}", l['status']),
+                        tags=('odd' if idx % 2 else 'even')
+                    )
+
+        tree.tag_configure('odd', background='#f7f7f7')
+        tree.tag_configure('even', background='#ffffff')
+
+        tree.pack(fill='both', expand=True)
+        sb = ttk.Scrollbar(frame, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.pack(side='right', fill='y')
+
+    # ---- Backup (players, loans, savings) ----
+    def backup(self):
+        data = {
+            "players": self.players,
+            "savings": self.savings,
+            "loans": self.loans
+        }
+        fn = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(fn, 'w', encoding='utf-8') as f:
+            import json
+            json.dump(data, f, indent=2)
+        messagebox.showinfo("Backup", f"JSON backup created: {fn}")
+
+    # ---- Check Savings ----
+    def check_savings(self):
+        self.clear_content()
+        today = datetime.now().date()
+
+        frame = ttk.Frame(self.content, padding=10, style="TFrame")
+        frame.pack(fill='both', expand=True)
+
+        ttk.Label(frame, text="Savings Status", font=('Segoe UI', 14, 'bold')).pack(pady=(0, 10))
+
+        canvas = tk.Canvas(frame, background="#eeeeee", highlightthickness=0)
+        sb = ttk.Scrollbar(frame, orient='vertical', command=canvas.yview)
+        inner = ttk.Frame(canvas, style="TFrame")
+
+        inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=inner, anchor='nw')
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        sb.pack(side='right', fill='y')
+
+        for s in self.savings.values():
+            if s['status'] != 'Active':
+                continue
+
+            start_str = s.get('start_date', today.strftime('%Y-%m-%d'))
+            try:
+                start = datetime.strptime(start_str, '%Y-%m-%d').date()
+            except:
+                start = today
+
+            next_pay = start + timedelta(days=7)
+            overdue = today > next_pay
+            on_time = (today == next_pay)
+
+            rate = s.get('interest_rate', 0.03)
+            princ = s.get('invested_value', 0)
+            due_amt = int(princ * rate)
+            p = self.players.get(s['player_id'], {})
+            payments_history = s.get('payments_history', [])
+
+            if overdue:
+                status_text = "Overdue"
+                color = "red"
+            elif on_time:
+                status_text = "Pay Today"
+                color = "green"
+            else:
+                status_text = "Upcoming"
+                color = "black"
+
+            info = (
+                f"Name: {p.get('name')}   Discord: {p.get('discord')}\n"
+                f"Principal: €{princ}   Due: €{due_amt} (Rate: {int(rate*100)}%)"
+            )
+            frm = ttk.LabelFrame(inner, text=p.get('name', ''), padding=10, style="TFrame")
+            ttk.Label(frm, text=info, font=('Segoe UI', 10)).pack(anchor='w')
+
+            lbl_status = ttk.Label(frm, text=f"Next Pay: {next_pay}   Status: {status_text}")
+            lbl_status.pack(anchor='w')
+            lbl_status.configure(foreground=color)
+
+            ttk.Button(frm, text="Paid", style="Custom.TButton", command=lambda sid=s['id']: self.process_paid_saving(sid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="Not-Paid", style="Custom.TButton", command=lambda sid=s['id']: self.process_not_paid_saving(sid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="Change Date", style="Custom.TButton", command=lambda sid=s['id']: self.change_start_date_saving(sid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="History", style="Custom.TButton", command=lambda sid=s['id']: self.show_savings_history(sid)).pack(side='left', padx=5, pady=5)
+
+            frm.pack(fill='x', pady=5)
+
+    def process_paid_saving(self, sid):
+        s = self.savings.get(sid, {})
+        if not s or s.get('status') != 'Active':
+            return
+
+        today = datetime.now().date()
+        start_str = s.get('start_date', today.strftime('%Y-%m-%d'))
+        try:
+            start = datetime.strptime(start_str, '%Y-%m-%d').date()
+        except:
+            start = today
+
+        next_pay = start + timedelta(days=7)
+        overdue = today > next_pay
+
+        payments_count = s.get('payments_count', 0) + 1
+        payments_history = s.get('payments_history', [])
+        payment_record = {
+            "date": today.strftime('%Y-%m-%d'),
+            "status": "Paid"
+        }
+        payments_history.append(payment_record)
+
+        if overdue:
+            new_start = next_pay + timedelta(days=7)
+        else:
+            new_start = today + timedelta(days=7)
+
+        rate = s.get('interest_rate', 0.03)
+        if payments_count >= 4:
+            rate = 0.05
+
+        update_data = {
+            "payments_count": payments_count,
+            "start_date": new_start.strftime('%Y-%m-%d'),
+            "payments_history": payments_history,
+            "interest_rate": rate
+        }
+        firebase_patch(f"{SAVINGS_URL[:-5]}/{sid}.json", update_data)
+        messagebox.showinfo("Done", "Marked as Paid.")
+        self.sync_data()
+        self.check_savings()
+
+    def process_not_paid_saving(self, sid):
+        s = self.savings.get(sid, {})
+        if not s or s.get('status') != 'Active':
+            return
+
+        today = datetime.now().date()
+        start_str = s.get('start_date', today.strftime('%Y-%m-%d'))
+        try:
+            start = datetime.strptime(start_str, '%Y-%m-%d').date()
+        except:
+            start = today
+
+        next_pay = start + timedelta(days=7)
+        overdue = today > next_pay
+
+        payments_count = s.get('payments_count', 0) + 1
+        payments_history = s.get('payments_history', [])
+        princ = s.get('invested_value', 0)
+        rate_current = s.get('interest_rate', 0.03)
+        due = int(princ * rate_current)
+        new_val = princ + due
+
+        payment_record = {
+            "date": today.strftime('%Y-%m-%d'),
+            "status": "Not Paid"
+        }
+        payments_history.append(payment_record)
+
+        if overdue:
+            new_start = next_pay + timedelta(days=7)
+        else:
+            new_start = today + timedelta(days=7)
+
+        new_rate = rate_current
+        if payments_count >= 4:
+            new_rate = 0.05
+
+        update_data = {
+            "invested_value": new_val,
+            "payments_count": payments_count,
+            "payments_history": payments_history,
+            "start_date": new_start.strftime('%Y-%m-%d'),
+            "interest_rate": new_rate
+        }
+        firebase_patch(f"{SAVINGS_URL[:-5]}/{sid}.json", update_data)
+        messagebox.showinfo("Done", "Interest compounded.")
+        self.sync_data()
+        self.check_savings()
+
+    def show_savings_history(self, sid):
+        s = self.savings.get(sid, {})
+        if not s:
+            return
+        hist = s.get('payments_history', [])
+
+        win = tk.Toplevel(self)
+        win.title("Savings History")
+        container = ttk.Frame(win, padding=10, style="TFrame")
+        container.pack(fill='both', expand=True)
+
+        ttk.Label(container, text=f"Savings for Player ID: {s.get('player_id')}", font=('Segoe UI', 12, 'bold')).pack(pady=5)
+
+        for record in sorted(hist, key=lambda x: x['date']):
+            date_str = record['date']
+            status = record['status']
+            lbl = ttk.Label(container, text=f"{date_str} : {status}")
+            color = "green" if status == "Paid" else "red" if status == "Not Paid" else "black"
+            lbl.configure(foreground=color)
+            lbl.pack(anchor='w')
+
+    def change_start_date_saving(self, sid):
+        new_date = simpledialog.askstring("Change Savings Start Date", "Enter new start date (YYYY-MM-DD):")
+        if not new_date:
+            return
+        try:
+            datetime.strptime(new_date, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showerror("Error", "Invalid date format. Use YYYY-MM-DD.")
+            return
+        firebase_patch(f"{SAVINGS_URL[:-5]}/{sid}.json", {'start_date': new_date})
+        messagebox.showinfo("Done", f"Start date changed to {new_date}.")
+        self.sync_data()
+        self.check_savings()
+
+    # ---- Check Loans ----
+    def check_loans(self):
+        self.clear_content()
+        today = datetime.now().date()
+
+        frame = ttk.Frame(self.content, padding=10, style="TFrame")
+        frame.pack(fill='both', expand=True)
+
+        ttk.Label(frame, text="Loans Status", font=('Segoe UI', 14, 'bold')).pack(pady=(0, 10))
+
+        canvas = tk.Canvas(frame, background="#eeeeee", highlightthickness=0)
+        sb = ttk.Scrollbar(frame, orient='vertical', command=canvas.yview)
+        inner = ttk.Frame(canvas, style="TFrame")
+
+        inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=inner, anchor='nw')
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        sb.pack(side='right', fill='y')
+
+        for l in self.loans.values():
+            if l['status'] != 'Active':
+                continue
+
+            start_str = l.get('start_date', today.strftime('%Y-%m-%d'))
+            try:
+                start = datetime.strptime(start_str, '%Y-%m-%d').date()
+            except:
+                start = today
+
+            total_days = l.get('total_days', 0)
+            total_to_pay = l.get('total_to_pay', 0)
+            rate = l.get('interest_rate', 0.0)
+            daily_payment = 0
+            if total_days > 0:
+                daily_payment = int(total_to_pay / total_days)
+
+            days_from_start = (today - start).days
+            p = self.players.get(l['player_id'], {})
+            paid_off = l.get('paid_off', False)
+
+            payments_history = l.get('payments_history', [])
+            today_status = None
+            for record in payments_history:
+                if record['date'] == today.strftime('%Y-%m-%d'):
+                    today_status = record['status']
+                    break
+
+            if days_from_start < 0:
+                day_status = "Upcoming"
+                color = "black"
+            elif days_from_start >= total_days:
+                day_status = "Loan Period Over" if not paid_off else "Paid-Off"
+                color = "black"
+            else:
+                if today_status == "Paid":
+                    day_status = "Paid"
+                    color = "green"
+                elif today_status == "Not Paid":
+                    day_status = "Not Paid"
+                    color = "red"
+                else:
+                    day_status = "Not Paid"
+                    color = "red"
+
+            info = (
+                f"Name: {p.get('name')}   Discord: {p.get('discord')}\n"
+                f"Total to Pay: €{total_to_pay}   Daily: €{daily_payment} (Rate: {int(rate*100)}%)\n"
+                f"Loan Days: {total_days}   Current Day: {days_from_start if days_from_start >= 0 else 0}"
+            )
+            frm = ttk.LabelFrame(inner, text=p.get('name', ''), padding=10, style="TFrame")
+            ttk.Label(frm, text=info, font=('Segoe UI', 10)).pack(anchor='w')
+
+            lbl_status = ttk.Label(frm, text=f"Today's Status: {day_status}")
+            lbl_status.pack(anchor='w')
+            lbl_status.configure(foreground=color)
+
+            ttk.Button(frm, text="Paid", style="Custom.TButton", command=lambda lid=l['id']: self.process_paid_loan(lid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="Not-Paid", style="Custom.TButton", command=lambda lid=l['id']: self.process_not_paid_loan(lid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="Change Date", style="Custom.TButton", command=lambda lid=l['id']: self.change_start_date_loan(lid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="History", style="Custom.TButton", command=lambda lid=l['id']: self.show_loan_history(lid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="Change Loan Days", style="Custom.TButton", command=lambda lid=l['id']: self.change_loan_days(lid)).pack(side='left', padx=5, pady=5)
+            ttk.Button(frm, text="Manual Payment Days", style="Custom.TButton", command=lambda lid=l['id']: self.manual_payment_days(lid)).pack(side='left', padx=5, pady=5)
+
+            frm.pack(fill='x', pady=5)
+
+    def process_paid_loan(self, lid):
+        l = self.loans.get(lid, {})
+        if not l or l.get('status') != 'Active':
+            return
+        today_str = datetime.now().strftime('%Y-%m-%d')
+
+        payments_history = l.get('payments_history', [])
+        found = False
+        for record in payments_history:
+            if record['date'] == today_str:
+                record['status'] = "Paid"
+                found = True
+                break
+
+        if not found:
+            payments_history.append({"date": today_str, "status": "Paid"})
+
+        firebase_patch(
+            f"{LOANS_URL[:-5]}/{lid}.json",
+            {
+                "payments_history": payments_history
+            }
+        )
+        messagebox.showinfo("Done", "Today's payment marked as Paid.")
+        self.sync_data()
+        self.check_loans()
+
+    def process_not_paid_loan(self, lid):
+        l = self.loans.get(lid, {})
+        if not l or l.get('status') != 'Active':
+            return
+        today_str = datetime.now().strftime('%Y-%m-%d')
+
+        payments_history = l.get('payments_history', [])
+        found = False
+        for record in payments_history:
+            if record['date'] == today_str:
+                record['status'] = "Not Paid"
+                found = True
+                break
+
+        if not found:
+            payments_history.append({"date": today_str, "status": "Not Paid"})
+
+        firebase_patch(
+            f"{LOANS_URL[:-5]}/{lid}.json",
+            {
+                "payments_history": payments_history
+            }
+        )
+        messagebox.showinfo("Done", "Today's payment marked as Not Paid.")
+        self.sync_data()
+        self.check_loans()
+
+    def change_start_date_loan(self, lid):
+        new_date = simpledialog.askstring("Change Loan Start Date", "Enter new start date (YYYY-MM-DD):")
+        if not new_date:
+            return
+        try:
+            datetime.strptime(new_date, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showerror("Error", "Invalid date format. Use YYYY-MM-DD.")
+            return
+        firebase_patch(f"{LOANS_URL[:-5]}/{lid}.json", {'start_date': new_date})
+        messagebox.showinfo("Done", f"Start date changed to {new_date}.")
+        self.sync_data()
+        self.check_loans()
+
+    def change_loan_days(self, lid):
+        loan = self.loans.get(lid, {})
+        if not loan or loan.get('status') != 'Active':
+            return
+        new_days_str = simpledialog.askstring(
+            "Change Loan Days",
+            f"Current days: {loan.get('total_days', 0)}\nEnter new total days:"
+        )
+        if not new_days_str:
+            return
+        try:
+            new_days = int(new_days_str)
+        except ValueError:
+            messagebox.showerror("Error", "Invalid number format.")
+            return
+        firebase_patch(
+            f"{LOANS_URL[:-5]}/{lid}.json",
+            {"total_days": new_days}
+        )
+        messagebox.showinfo("Done", f"Loan days changed to {new_days}.")
+        self.sync_data()
+        self.check_loans()
+
+    def manual_payment_days(self, lid):
+        loan = self.loans.get(lid, {})
+        if not loan or loan.get('status') != 'Active':
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Manual Payment Days")
+        container = ttk.Frame(win, padding=10, style="TFrame")
+        container.pack(fill='both', expand=True)
+
+        ttk.Label(container, text=f"Loan for Player ID: {loan.get('player_id')}", font=('Segoe UI', 12, 'bold')).pack(pady=5)
+
+        def set_day_payment():
+            day_str = day_entry.get().strip()
+            status_str = status_var.get().strip()
+            if not day_str or not status_str:
+                messagebox.showerror("Error", "Provide both day number and payment status.")
+                return
+            try:
+                day_num = int(day_str)
+            except ValueError:
+                messagebox.showerror("Error", "Day must be an integer.")
+                return
+
+            total_days = loan.get('total_days', 0)
+            if day_num < 1 or day_num > total_days:
+                messagebox.showerror("Error", f"Day must be between 1 and {total_days}.")
+                return
+
+            start_str = loan.get('start_date')
+            try:
+                start_dt = datetime.strptime(start_str, '%Y-%m-%d').date()
+            except:
+                start_dt = datetime.now().date()
+
+            pay_date = start_dt + timedelta(days=day_num - 1)
+            pay_date_str = pay_date.strftime('%Y-%m-%d')
+
+            payments_history = loan.get('payments_history', [])
+            found_rec = False
+            for record in payments_history:
+                if record['date'] == pay_date_str:
+                    record['status'] = status_str
+                    found_rec = True
+                    break
+
+            if not found_rec:
+                payments_history.append({"date": pay_date_str, "status": status_str})
+
+            firebase_patch(f"{LOANS_URL[:-5]}/{lid}.json", {
+                "payments_history": payments_history
+            })
+            messagebox.showinfo("Done", f"Day {day_num} marked as {status_str}.")
+            self.sync_data()
+            self.check_loans()
+
+        day_frame = ttk.Frame(container, style="TFrame")
+        day_frame.pack(pady=5, fill='x')
+
+        ttk.Label(day_frame, text="Day Number:").pack(side='left', padx=5)
+        day_entry = ttk.Entry(day_frame, width=5)
+        day_entry.pack(side='left', padx=5)
+
+        status_var = tk.StringVar()
+        status_combo = ttk.Combobox(day_frame, textvariable=status_var, values=["Paid", "Not Paid"], state='readonly')
+        status_combo.pack(side='left', padx=5)
+
+        ttk.Button(day_frame, text="Set", style="Custom.TButton", command=set_day_payment).pack(side='left', padx=10)
+
+    def show_loan_history(self, lid):
+        l = self.loans.get(lid, {})
+        if not l:
+            return
+        hist = l.get('payments_history', [])
+
+        win = tk.Toplevel(self)
+        win.title("Loan History")
+        container = ttk.Frame(win, padding=10, style="TFrame")
+        container.pack(fill='both', expand=True)
+
+        ttk.Label(container, text=f"Loan for Player ID: {l.get('player_id')}", font=('Segoe UI', 12, 'bold')).pack(pady=5)
+
+        for record in sorted(hist, key=lambda x: x['date']):
+            date_str = record['date']
+            status = record['status']
+            lbl = ttk.Label(container, text=f"{date_str} : {status}")
+            color = "green" if status == "Paid" else "red" if status == "Not Paid" else "black"
+            lbl.configure(foreground=color)
+            lbl.pack(anchor='w')
+
+    # ---- Check Updates ----
+    def check_updates(self):
+        vi = firebase_get(VERSION_URL)
+        rem = vi.get('version', '')
+        url = vi.get('update_url', '')
+        if rem > CURRENT_VERSION:
+            if messagebox.askyesno("Update", f"Version {rem} available. Update?"):
+                import webbrowser
+                webbrowser.open(url)
+        else:
+            messagebox.showinfo("No Update", "Latest version.")
+
+if __name__ == "__main__":
+    app = BankApp()
+    app.mainloop()
